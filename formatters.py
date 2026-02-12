@@ -1,6 +1,6 @@
 """
-消息格式化模块 - 简洁版
-将监控数据格式化为简洁的 Telegram 消息
+消息格式化模块 - 精简版
+聪明钱净流入/流出报告
 """
 from datetime import datetime
 from typing import Dict, List
@@ -24,116 +24,101 @@ class MessageFormatter:
         格式化美元价值
         """
         if value >= 1_000_000_000:
-            return f"${value/1_000_000_000:.2f}B"
+            return f"${value/1_000_000_000:.1f}B"
         elif value >= 1_000_000:
             return f"${value/1_000_000:.1f}M"
         elif value >= 1_000:
             return f"${value/1_000:.1f}K"
         else:
-            return f"${value:.2f}"
+            return f"${value:.0f}"
     
     @staticmethod
-    def format_percent(pct: float) -> str:
+    def format_flow_list(tokens: List[Dict], flow_type: str) -> str:
         """
-        格式化百分比
-        """
-        if pct > 0:
-            return f"+{pct:.2f}%"
-        else:
-            return f"{pct:.2f}%"
-    
-    @staticmethod
-    def format_holdings_list(tokens: List[Dict]) -> str:
-        """
-        格式化持仓列表（紧凑格式）
+        格式化流入/流出列表
+        
+        Args:
+            tokens: 代币列表
+            flow_type: 'inflow' 或 'outflow'
+        
+        Returns:
+            格式化后的文本
         """
         if not tokens:
-            return "  📭 暂无数据\n"
+            return "  📭 暂无明显流动\n"
         
         result = []
+        prefix = "+" if flow_type == 'inflow' else "-"
+        
         for idx, token in enumerate(tokens, 1):
             symbol = token['token']
-            value = MessageFormatter.format_value(token['value_usd'])
-            change_pct = token.get('change_pct', 0)
+            net_flow = MessageFormatter.format_value(token['net_flow_usd'])
             
-            line = f"  {idx}. {symbol}: {value}"
-            
-            # 如果有24h变化，显示变化
-            if abs(change_pct) > 0.01:
-                change_str = MessageFormatter.format_percent(change_pct)
-                line += f" ({change_str})"
-            
-            result.append(line)
-        
-        return "\n".join(result) + "\n"
-    
-    @staticmethod
-    def format_changes_list(tokens: List[Dict], change_type: str) -> str:
-        """
-        格式化变化列表
-        change_type: 'increase' 或 'decrease'
-        """
-        if not tokens:
-            return "  📭 暂无\n"
-        
-        result = []
-        for idx, token in enumerate(tokens, 1):
-            symbol = token['token']
-            change_pct = token.get('change_pct', 0)
-            value = MessageFormatter.format_value(token['value_usd'])
-            
-            change_str = MessageFormatter.format_percent(change_pct)
-            result.append(f"  {idx}. {symbol}: {change_str} (持仓: {value})")
+            result.append(f"  {idx}. {symbol} {prefix}{net_flow}")
         
         return "\n".join(result) + "\n"
     
     @staticmethod
     def format_chain_section(chain_name: str, data: Dict) -> str:
         """
-        格式化单个链的数据（新格式）
+        格式化单个链的数据（净流入/流出版）
+        
+        Args:
+            chain_name: 链名称
+            data: 包含 net_inflows 和 net_outflows 的数据
+        
+        Returns:
+            格式化后的文本
         """
         emoji = MessageFormatter.CHAIN_EMOJIS.get(chain_name, '⚪')
         
         sections = [
-            f"{emoji} **{chain_name}**",
+            f"◆ **{emoji} {chain_name} 聪明钱净流动 TOP 5 (24h)**",
             ""
         ]
         
         # 检查是否有错误
         if 'error' in data:
-            sections.append(f"  ⚠️ 数据获取失败\n")
+            sections.append("  ⚠️ 数据获取失败\n")
             return "\n".join(sections)
         
-        # Top 持仓
-        sections.append("💰 持仓最多（按价值）:")
-        sections.append(MessageFormatter.format_holdings_list(data.get('top_holdings', [])))
+        # 净流入
+        net_inflows = data.get('net_inflows', [])
+        if net_inflows:
+            sections.append("💰 **净流入：**")
+            sections.append(MessageFormatter.format_flow_list(net_inflows, 'inflow'))
         
-        # 增持最多
-        increases = data.get('biggest_increases', [])
-        if increases:
-            sections.append("📈 增持最多(24h):")
-            sections.append(MessageFormatter.format_changes_list(increases, 'increase'))
+        # 净流出
+        net_outflows = data.get('net_outflows', [])
+        if net_outflows:
+            sections.append("📉 **净流出：**")
+            sections.append(MessageFormatter.format_flow_list(net_outflows, 'outflow'))
         
-        # 减持最多  
-        decreases = data.get('biggest_decreases', [])
-        if decreases:
-            sections.append("📉 减持最多(24h):")
-            sections.append(MessageFormatter.format_changes_list(decreases, 'decrease'))
+        # 如果都没有数据
+        if not net_inflows and not net_outflows:
+            sections.append("  📭 24h内无明显流动变化\n")
         
+        sections.append("")  # 空行分隔
         return "\n".join(sections)
     
     @staticmethod
     def format_report(report_data: Dict) -> str:
         """
-        格式化完整报告（简洁版）
+        格式化完整报告（精简版）
+        
+        Args:
+            report_data: 完整的监控报告数据
+        
+        Returns:
+            格式化后的 Telegram 消息
         """
         # 报告头部
         timestamp = datetime.fromisoformat(report_data['timestamp'])
         time_str = timestamp.strftime('%Y-%m-%d %H:%M')
         
         message = [
-            "📊 **智能资金监控报告**",
-            f"🕐 {time_str}",
+            "📊 **聪明钱流动监控**",
+            f"🕐 {time_str} | ⏱ 24小时数据",
             ""
         ]
         
@@ -153,6 +138,8 @@ class MessageFormatter:
         message.extend([
             "━━━━━━━━━━━━━━━━━━",
             "💡 数据来源: Nansen Smart Money",
+            "📌 净流入 = 聪明钱增持金额",
+            "📌 净流出 = 聪明钱减持金额",
             f"🔄 下次更新: {Config.REPORT_INTERVAL_HOURS}小时后"
         ])
         
@@ -161,7 +148,7 @@ class MessageFormatter:
     @staticmethod
     def format_error_message(error: str) -> str:
         """格式化错误消息"""
-        return f"⚠️ **错误**\n\n{error}\n\n请检查配置或联系管理员。"
+        return f"⚠️ **错误**\n\n{error}\n\n请检查配置。"
     
     @staticmethod
     def format_status_message() -> str:
@@ -171,8 +158,8 @@ class MessageFormatter:
         return (
             "✅ **监控状态**\n\n"
             f"📡 监控链: {chains}\n"
-            f"⏰ 时间段: 24小时数据\n"
+            f"⏰ 数据范围: 24小时净流动\n"
             f"🔄 报告间隔: 每 {Config.REPORT_INTERVAL_HOURS} 小时\n"
-            f"📊 显示: Top {Config.TOP_TOKENS_COUNT} 代币\n\n"
+            f"📊 每链显示: Top 5 流入 + Top 5 流出\n\n"
             "💡 自动运行中..."
         )

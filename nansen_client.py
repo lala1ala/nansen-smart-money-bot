@@ -152,60 +152,59 @@ class NansenClient:
         hours: int
     ) -> Dict[str, List[Dict]]:
         """
-        聚合智能资金持仓数据，按价值和24小时变化排序
+        聚合智能资金净流入/流出数据（按金额）
         
         Args:
             chain: 区块链名称
-            hours: 时间段（小时）- 注意：API 返回24小时数据
+            hours: 时间段（小时）
             
         Returns:
-            包含 'top_holdings', 'biggest_increases', 'biggest_decreases' 的字典
+            包含 'net_inflows' 和 'net_outflows' 的字典
         """
         # 获取智能资金持仓数据
-        holdings = self.get_smart_money_holdings([chain])
+        holdings = self.get_smart_money_holdings([chain], limit=200)
         
-        all_tokens = []
-        increases = []
-        decreases = []
+        net_inflows = []
+        net_outflows = []
         
         for item in holdings:
             # 获取数据
             balance_change_pct = item.get('balance_24h_percent_change', 0)
             value_usd = item.get('value_usd', 0)
             
-            # 获取代币符号
-            symbol = item.get('token_symbol', 'Unknown')
+            # 跳过变化太小的（< 0.01%）
+            if abs(balance_change_pct) < 0.01:
+                continue
             
-            # 获取扇区信息
-            sectors = item.get('token_sectors', [])
-            sector = sectors[0] if sectors else 'Other'
+            # 计算净流入/流出金额（美元）
+            net_flow_usd = value_usd * balance_change_pct / 100
+            
+            # 获取代币信息
+            symbol = item.get('token_symbol', 'Unknown')
             
             token_info = {
                 'token': symbol,
+                'net_flow_usd': abs(net_flow_usd),  # 绝对值用于排序
                 'value_usd': value_usd,
-                'change_pct': balance_change_pct,
-                'holders': item.get('holders_count', 0),
-                'sector': sector
+                'holders': item.get('holders_count', 0)
             }
             
-            all_tokens.append(token_info)
-            
-            # 分类增持和减持（只有变化 > 0.01% 才算）
-            if balance_change_pct > 0.01:
-                increases.append(token_info)
-            elif balance_change_pct < -0.01:
-                decreases.append(token_info)
+            # 分类：净流入 vs 净流出
+            if net_flow_usd > 0:
+                net_inflows.append(token_info)
+            else:
+                net_outflows.append(token_info)
         
-        # 排序
-        all_tokens.sort(key=lambda x: x['value_usd'], reverse=True)
-        increases.sort(key=lambda x: x['change_pct'], reverse=True)
-        decreases.sort(key=lambda x: x['change_pct'])  # 降序（负数小的在前）
+        # 按净流动金额排序（降序）
+        net_inflows.sort(key=lambda x: x['net_flow_usd'], reverse=True)
+        net_outflows.sort(key=lambda x: x['net_flow_usd'], reverse=True)
         
+        # 只返回 Top 5
         return {
-            'top_holdings': all_tokens[:Config.TOP_TOKENS_COUNT],
-            'biggest_increases': increases[:5],
-            'biggest_decreases': decreases[:5]
+            'net_inflows': net_inflows[:5],
+            'net_outflows': net_outflows[:5]
         }
+
     
     def get_monitoring_report(self) -> Dict:
         """

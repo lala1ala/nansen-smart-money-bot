@@ -39,7 +39,7 @@ class Config:
     API_RETRY_DELAY = 2  # 秒
     
     # 每个时间段显示的代币数量
-    TOP_TOKENS_COUNT = 10  # 增加到10个
+    TOP_TOKENS_COUNT = 5  # Top 5 流入 + Top 5 流出
     
     @classmethod
     def validate(cls):
