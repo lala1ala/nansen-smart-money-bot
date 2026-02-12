@@ -14,33 +14,43 @@ class NansenClient:
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = Config.NANSEN_BASE_URL
+        self.base_url = 'https://api.nansen.ai'
         self.headers = {
-            'X-API-KEY': api_key,
+            'apikey': api_key,  # 注意：Nansen 使用 'apikey' 而不是 'X-API-KEY'
             'Content-Type': 'application/json'
         }
     
-    def _make_request(self, endpoint: str, params: Optional[Dict] = None) -> Dict:
+    def _make_request(self, endpoint: str, body: Optional[Dict] = None, method='POST') -> Dict:
         """
         发送 API 请求，带重试机制
         
         Args:
             endpoint: API 端点
-            params: 查询参数
+            body: POST 请求体
+            method: HTTP 方法 (POST/GET)
             
         Returns:
             API 响应数据
         """
-        url = f"{self.base_url}/{endpoint}"
+        url = f"{self.base_url}{endpoint}"
         
         for attempt in range(Config.API_RETRY_TIMES):
             try:
-                response = requests.get(
-                    url,
-                    headers=self.headers,
-                    params=params,
-                    timeout=Config.API_TIMEOUT
-                )
+                if method == 'POST':
+                    response = requests.post(
+                        url,
+                        headers=self.headers,
+                        json=body or {},
+                        timeout=Config.API_TIMEOUT
+                    )
+                else:
+                    response = requests.get(
+                        url,
+                        headers=self.headers,
+                        params=body,
+                        timeout=Config.API_TIMEOUT
+                    )
+                
                 response.raise_for_status()
                 return response.json()
             
@@ -51,75 +61,81 @@ class NansenClient:
         
         return {}
     
-    def get_smart_money_token_balances(
+    def get_smart_money_holdings(
         self, 
         chain: str, 
-        hours: int,
+        timeframe: str = '24h',
         limit: int = 100
     ) -> List[Dict]:
         """
-        获取智能资金的代币持仓变化
+        获取智能资金的代币持仓数据
         
         Args:
             chain: 区块链名称 (ethereum, base, solana, bsc)
-            hours: 时间段（小时）
+            timeframe: 时间范围 (1h, 6h, 24h, 7d, 30d)
             limit: 返回结果数量
             
         Returns:
-            代币列表，包含买入/卖出数据
+            代币列表，包含持仓变化数据
         """
-        # 计算时间范围
-        end_time = datetime.utcnow()
-        start_time = end_time - timedelta(hours=hours)
-        
-        # 构建请求参数
-        params = {
-            'chain': chain,
-            'from': start_time.strftime('%Y-%m-%d'),
-            'to': end_time.strftime('%Y-%m-%d'),
-            'limit': limit
+        # 构建请求体
+        body = {
+            'chains': [chain],
+            'timeframe': timeframe,
+            'pagination': {
+                'limit': limit,
+                'offset': 0
+            }
         }
         
         try:
             # 调用 Nansen API
-            data = self._make_request('smart-money/token-balances', params)
+            data = self._make_request('/api/v1/smart-money/holdings', body, method='POST')
             return data.get('data', [])
         except Exception as e:
             print(f"获取 {chain} 智能资金数据失败: {str(e)}")
             return []
     
-    def get_token_flows(
+    def get_token_screener(
         self,
-        chain: str,
-        hours: int,
-        segment: str = 'smart_money'
+        chains: List[str],
+        timeframe: str = '24h',
+        only_smart_money: bool = True,
+        limit: int = 50
     ) -> List[Dict]:
         """
-        获取代币资金流向数据
+        使用 token screener 获取代币数据
         
         Args:
-            chain: 区块链名称
-            hours: 时间段（小时）
-            segment: 用户群体 (smart_money, funds, whales)
+            chains: 区块链列表
+            timeframe: 时间范围
+            only_smart_money: 仅智能资金活跃的代币
+            limit: 返回结果数量
             
         Returns:
-            代币流向数据
+            代币列表
         """
-        end_time = datetime.utcnow()
-        start_time = end_time - timedelta(hours=hours)
-        
-        params = {
-            'chain': chain,
-            'from': start_time.strftime('%Y-%m-%d'),
-            'to': end_time.strftime('%Y-%m-%d'),
-            'segment': segment
+        body = {
+            'chains': chains,
+            'timeframe': timeframe,
+            'pagination': {
+                'limit': limit,
+                'offset': 0
+            },
+            'filters': {
+                'only_smart_money': only_smart_money
+            },
+            'sort': [{
+                'field': 'smart_money_buy_volume',
+                'direction': 'DESC'
+            }]
         }
         
         try:
-            data = self._make_request('token/flows', params)
+            data = self._make_request('/api/v1/token-screener', body, method='POST')
             return data.get('data', [])
         except Exception as e:
-            print(f"获取 {chain} 资金流向失败: {str(e)}")
+            print(f"获取 token screener 数据失败: {str(e)}")
             return []
     
     def aggregate_trading_data(
@@ -137,33 +153,41 @@ class NansenClient:
         Returns:
             包含 'buys' 和 'sells' 的字典
         """
-        # 获取智能资金持仓变化
-        balances = self.get_smart_money_token_balances(chain, hours)
+        # 根据小时数选择合适的 timeframe
+        if hours <= 1:
+            timeframe = '1h'
+        elif hours <= 6:
+            timeframe = '6h'
+        elif hours <= 24:
+            timeframe = '24h'
+        elif hours <= 168:  # 7 days
+            timeframe = '7d'
+        else:
+            timeframe = '30d'
+        
+        # 获取智能资金持仓数据
+        holdings = self.get_smart_money_holdings(chain, timeframe)
         
         # 分离买入和卖出
         buys = []
         sells = []
         
-        for item in balances:
-            # 根据余额变化判断买入/卖出
-            balance_change = item.get('balance_change', 0)
+        for item in holdings:
+            # 获取24小时变化数据
+            change_24h = item.get('change_24h', {})
+            balance_change_usd = change_24h.get('balance_change_usd', 0)
             
-            if balance_change > 0:
-                buys.append({
-                    'token': item.get('token_symbol', 'Unknown'),
-                    'token_name': item.get('token_name', ''),
-                    'amount': abs(balance_change),
-                    'value_usd': item.get('value_usd', 0),
-                    'count': item.get('trader_count', 0)
-                })
-            elif balance_change < 0:
-                sells.append({
-                    'token': item.get('token_symbol', 'Unknown'),
-                    'token_name': item.get('token_name', ''),
-                    'amount': abs(balance_change),
-                    'value_usd': item.get('value_usd', 0),
-                    'count': item.get('trader_count', 0)
-                })
+            token_info = {
+                'token': item.get('symbol', 'Unknown'),
+                'token_name': item.get('name', ''),
+                'value_usd': abs(balance_change_usd),
+                'count': item.get('holder_count', 0)
+            }
+            
+            if balance_change_usd > 0:
+                buys.append(token_info)
+            elif balance_change_usd < 0:
+                sells.append(token_info)
         
         # 按交易价值排序
         buys.sort(key=lambda x: x['value_usd'], reverse=True)
@@ -204,6 +228,6 @@ class NansenClient:
                     }
                 
                 # 避免 API 限流
-                time.sleep(0.5)
+                time.sleep(1)
         
         return report
