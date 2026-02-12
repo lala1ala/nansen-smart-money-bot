@@ -63,37 +63,51 @@ class NansenClient:
     
     def get_smart_money_holdings(
         self, 
-        chain: str, 
-        timeframe: str = '24h',
-        limit: int = 100
+        chains: List[str],
+        limit: int = 100,
+        include_24h_changes_only: bool = True
     ) -> List[Dict]:
         """
         获取智能资金的代币持仓数据
         
         Args:
-            chain: 区块链名称 (ethereum, base, solana, bsc)
-            timeframe: 时间范围 (1h, 6h, 24h, 7d, 30d)
+            chains: 区块链列表 (["ethereum"], ["solana"], etc.)
             limit: 返回结果数量
+            include_24h_changes_only: 仅包含24小时有变化的代币
             
         Returns:
             代币列表，包含持仓变化数据
         """
-        # 构建请求体
+        # 构建请求体 - 移除了不支持的 timeframe 参数
         body = {
-            'chains': [chain],
-            'timeframe': timeframe,
+            'chains': chains,
             'pagination': {
                 'limit': limit,
                 'offset': 0
-            }
+            },
+            'order_by': [
+                {
+                    'field': 'value_usd',
+                    'direction': 'DESC'
+                }
+            ]
         }
+        
+        # 如果只要有变化的代币，添加过滤器
+        if include_24h_changes_only:
+            body['filters'] = {
+                'balance_24h_percent_change': {
+                    'min': -100,  # 允许大幅卖出
+                    'max': 100    # 允许大幅买入
+                }
+            }
         
         try:
             # 调用 Nansen API
             data = self._make_request('/api/v1/smart-money/holdings', body, method='POST')
             return data.get('data', [])
         except Exception as e:
-            print(f"获取 {chain} 智能资金数据失败: {str(e)}")
+            print(f"获取 {chains} 智能资金数据失败: {str(e)}")
             return []
     
     def get_token_screener(
@@ -148,46 +162,40 @@ class NansenClient:
         
         Args:
             chain: 区块链名称
-            hours: 时间段（小时）
+            hours: 时间段（小时）- 注意：API 返回24小时数据
             
         Returns:
             包含 'buys' 和 'sells' 的字典
         """
-        # 根据小时数选择合适的 timeframe
-        if hours <= 1:
-            timeframe = '1h'
-        elif hours <= 6:
-            timeframe = '6h'
-        elif hours <= 24:
-            timeframe = '24h'
-        elif hours <= 168:  # 7 days
-            timeframe = '7d'
-        else:
-            timeframe = '30d'
-        
-        # 获取智能资金持仓数据
-        holdings = self.get_smart_money_holdings(chain, timeframe)
+        # 获取智能资金持仓数据 (目前 API 只返回当前持仓和24小时变化)
+        holdings = self.get_smart_money_holdings([chain])
         
         # 分离买入和卖出
         buys = []
         sells = []
         
         for item in holdings:
-            # 获取24小时变化数据
-            change_24h = item.get('change_24h', {})
-            balance_change_usd = change_24h.get('balance_change_usd', 0)
+            # 获取24小时变化百分比
+            balance_change_pct = item.get('balance_24h_percent_change', 0)
+            value_usd = item.get('value_usd', 0)
             
-            token_info = {
-                'token': item.get('symbol', 'Unknown'),
-                'token_name': item.get('name', ''),
-                'value_usd': abs(balance_change_usd),
-                'count': item.get('holder_count', 0)
-            }
-            
-            if balance_change_usd > 0:
-                buys.append(token_info)
-            elif balance_change_usd < 0:
-                sells.append(token_info)
+            # 计算变化的美元价值
+            if balance_change_pct != 0 and value_usd > 0:
+                # 估算变化金额
+                change_value_usd = abs(value_usd * balance_change_pct / 100)
+                
+                token_info = {
+                    'token': item.get('symbol', 'Unknown'),
+                    'token_name': item.get('name', ''),
+                    'value_usd': change_value_usd,
+                    'count': item.get('holder_count', 0),
+                    'change_pct': balance_change_pct
+                }
+                
+                if balance_change_pct > 0:
+                    buys.append(token_info)
+                else:
+                    sells.append(token_info)
         
         # 按交易价值排序
         buys.sort(key=lambda x: x['value_usd'], reverse=True)
