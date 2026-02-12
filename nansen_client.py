@@ -174,10 +174,32 @@ class NansenClient:
         buys = []
         sells = []
         
+        # Debug: 打印第一个 item 的所有字段
+        if holdings and len(holdings) > 0:
+            print(f"DEBUG: 第一个代币的所有字段: {list(holdings[0].keys())}")
+            print(f"DEBUG: 示例数据: {holdings[0]}")
+        
         for item in holdings:
             # 获取24小时变化百分比
             balance_change_pct = item.get('balance_24h_percent_change', 0)
             value_usd = item.get('value_usd', 0)
+            
+            # 尝试多个可能的符号字段名
+            symbol = (
+                item.get('symbol') or 
+                item.get('token_symbol') or 
+                item.get('ticker') or
+                item.get('contract_ticker_symbol') or
+                'Unknown'
+            )
+            
+            # 尝试多个可能的名称字段名
+            name = (
+                item.get('name') or 
+                item.get('token_name') or 
+                item.get('contract_name') or
+                ''
+            )
             
             # 计算变化的美元价值
             if balance_change_pct != 0 and value_usd > 0:
@@ -185,8 +207,8 @@ class NansenClient:
                 change_value_usd = abs(value_usd * balance_change_pct / 100)
                 
                 token_info = {
-                    'token': item.get('symbol', 'Unknown'),
-                    'token_name': item.get('name', ''),
+                    'token': symbol,
+                    'token_name': name,
                     'value_usd': change_value_usd,
                     'count': item.get('holder_count', 0),
                     'change_pct': balance_change_pct
