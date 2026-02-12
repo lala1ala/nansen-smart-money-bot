@@ -1,0 +1,49 @@
+name: Smart Money Monitor Bot
+
+on:
+  workflow_dispatch:  # 允许手动触发
+  schedule:
+    # 每2小时运行一次 (根据需要调整)
+    - cron: '0 */2 * * *'
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+    
+    - name: Send monitoring report
+      env:
+        NANSEN_API_KEY: ${{ secrets.NANSEN_API_KEY }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        REPORT_INTERVAL_HOURS: 2
+      run: |
+        python -c "
+import asyncio
+from bot import SmartMoneyBot
+from telegram.ext import ContextTypes
+
+async def send_single_report():
+    bot = SmartMoneyBot()
+    # 创建一个简单的 context 来发送报告
+    class SimpleContext:
+        def __init__(self, bot_instance):
+            self.bot = bot_instance
+    
+    context = SimpleContext(bot.app.bot if bot.app else None)
+    await bot.send_report(context)
+
+asyncio.run(send_single_report())
+        "
