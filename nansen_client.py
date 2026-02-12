@@ -93,14 +93,8 @@ class NansenClient:
             ]
         }
         
-        # 如果只要有变化的代币，添加过滤器
-        if include_24h_changes_only:
-            body['filters'] = {
-                'balance_24h_percent_change': {
-                    'min': -100,  # 允许大幅卖出
-                    'max': 100    # 允许大幅买入
-                }
-            }
+        # 不再过滤 - 显示所有智能资金持仓数据
+        # Smart money holdings 的变化通常很少，过滤会丢失大量有价值的数据
         
         try:
             # 调用 Nansen API
@@ -158,74 +152,59 @@ class NansenClient:
         hours: int
     ) -> Dict[str, List[Dict]]:
         """
-        聚合交易数据，分别统计买入和卖出最多的代币
+        聚合智能资金持仓数据，按价值和24小时变化排序
         
         Args:
             chain: 区块链名称
             hours: 时间段（小时）- 注意：API 返回24小时数据
             
         Returns:
-            包含 'buys' 和 'sells' 的字典
+            包含 'top_holdings', 'biggest_increases', 'biggest_decreases' 的字典
         """
-        # 获取智能资金持仓数据 (目前 API 只返回当前持仓和24小时变化)
+        # 获取智能资金持仓数据
         holdings = self.get_smart_money_holdings([chain])
         
-        # 分离买入和卖出
-        buys = []
-        sells = []
-        
-        # Debug: 打印第一个 item 的所有字段
-        if holdings and len(holdings) > 0:
-            print(f"DEBUG: 第一个代币的所有字段: {list(holdings[0].keys())}")
-            print(f"DEBUG: 示例数据: {holdings[0]}")
+        all_tokens = []
+        increases = []
+        decreases = []
         
         for item in holdings:
-            # 获取24小时变化百分比
+            # 获取数据
             balance_change_pct = item.get('balance_24h_percent_change', 0)
             value_usd = item.get('value_usd', 0)
             
-            # 尝试多个可能的符号字段名
-            symbol = (
-                item.get('symbol') or 
-                item.get('token_symbol') or 
-                item.get('ticker') or
-                item.get('contract_ticker_symbol') or
-                'Unknown'
-            )
+            # 获取代币符号
+            symbol = item.get('token_symbol', 'Unknown')
             
-            # 尝试多个可能的名称字段名
-            name = (
-                item.get('name') or 
-                item.get('token_name') or 
-                item.get('contract_name') or
-                ''
-            )
+            # 获取扇区信息
+            sectors = item.get('token_sectors', [])
+            sector = sectors[0] if sectors else 'Other'
             
-            # 计算变化的美元价值
-            if balance_change_pct != 0 and value_usd > 0:
-                # 估算变化金额
-                change_value_usd = abs(value_usd * balance_change_pct / 100)
-                
-                token_info = {
-                    'token': symbol,
-                    'token_name': name,
-                    'value_usd': change_value_usd,
-                    'count': item.get('holder_count', 0),
-                    'change_pct': balance_change_pct
-                }
-                
-                if balance_change_pct > 0:
-                    buys.append(token_info)
-                else:
-                    sells.append(token_info)
+            token_info = {
+                'token': symbol,
+                'value_usd': value_usd,
+                'change_pct': balance_change_pct,
+                'holders': item.get('holders_count', 0),
+                'sector': sector
+            }
+            
+            all_tokens.append(token_info)
+            
+            # 分类增持和减持（只有变化 > 0.01% 才算）
+            if balance_change_pct > 0.01:
+                increases.append(token_info)
+            elif balance_change_pct < -0.01:
+                decreases.append(token_info)
         
-        # 按交易价值排序
-        buys.sort(key=lambda x: x['value_usd'], reverse=True)
-        sells.sort(key=lambda x: x['value_usd'], reverse=True)
+        # 排序
+        all_tokens.sort(key=lambda x: x['value_usd'], reverse=True)
+        increases.sort(key=lambda x: x['change_pct'], reverse=True)
+        decreases.sort(key=lambda x: x['change_pct'])  # 降序（负数小的在前）
         
         return {
-            'buys': buys[:Config.TOP_TOKENS_COUNT],
-            'sells': sells[:Config.TOP_TOKENS_COUNT]
+            'top_holdings': all_tokens[:Config.TOP_TOKENS_COUNT],
+            'biggest_increases': increases[:5],
+            'biggest_decreases': decreases[:5]
         }
     
     def get_monitoring_report(self) -> Dict:

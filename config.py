@@ -27,11 +27,11 @@ class Config:
         'ethereum': 'ETH',
         'base': 'BASE',
         'solana': 'SOL',
-        'bsc': 'BSC'
+        'bnb': 'BNB'  # 修正：BSC 的正确标识符是 'bnb'
     }
     
-    # 监控时间段（小时）
-    TIME_PERIODS = [2, 4, 12, 24]
+    # 监控时间段（小时）- 简化为只显示24小时数据
+    TIME_PERIODS = [24]
     
     # API 配置
     API_TIMEOUT = 30  # 秒
@@ -39,7 +39,7 @@ class Config:
     API_RETRY_DELAY = 2  # 秒
     
     # 每个时间段显示的代币数量
-    TOP_TOKENS_COUNT = 5
+    TOP_TOKENS_COUNT = 10  # 增加到10个
     
     @classmethod
     def validate(cls):
