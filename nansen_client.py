@@ -86,7 +86,7 @@ class NansenClient:
                 'only_smart_money': True
             },
             'sort': [{
-                'field': 'net_flow',
+                'field': 'netflow',
                 'direction': 'DESC'
             }]
         }
@@ -96,7 +96,7 @@ class NansenClient:
             tokens = data.get('data', [])
             
             # 只保留净流入为正的代币（真正是聪明钱买入）
-            positive_flow = [t for t in tokens if t.get('net_flow', 0) > 0]
+            positive_flow = [t for t in tokens if t.get('netflow', 0) > 0]
             return positive_flow[:limit]
             
         except Exception as e:

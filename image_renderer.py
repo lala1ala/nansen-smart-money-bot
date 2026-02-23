@@ -176,8 +176,8 @@ def render_netflow_image(tokens: List[Dict], timeframe: str) -> BytesIO:
         symbol    = token.get('token_symbol') or token.get('symbol', '???')
         price     = token.get('price_usd') or token.get('price', 0)
         chain     = token.get('chain', '')
-        traders   = token.get('smart_money_traders') or token.get('traders', 0)
-        net_flow  = token.get('net_flow') or token.get('smart_money_net_flow', 0)
+        traders   = token.get('nof_traders') or token.get('traders', 0)
+        net_flow  = token.get('netflow') or token.get('buy_volume', 0)
         
         row_data = [
             str(idx + 1),
