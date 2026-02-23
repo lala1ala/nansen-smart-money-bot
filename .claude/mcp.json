@@ -1,0 +1,18 @@
+{
+    "mcpServers": {
+        "nansen-mcp": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-remote",
+                "https://mcp.nansen.ai/ra/mcp/",
+                "--header",
+                "NANSEN-API-KEY: ${NANSEN_API_KEY}",
+                "--allow-http"
+            ],
+            "env": {
+                "NANSEN_API_KEY": "k1r9O0iPDyxmTQsGgiw7dodTEnaKkpsR"
+            }
+        }
+    }
+}

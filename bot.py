@@ -1,23 +1,22 @@
 """
 Telegram Bot 主程序
-处理用户命令和自动发送监控报告
+Smart Money 净流入图片报告 - 北京时间定时发送
 """
 import asyncio
 import logging
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes
-)
+import pytz
+from datetime import datetime
+from io import BytesIO
+
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.constants import ParseMode
 
 from config import Config
 from nansen_client import NansenClient
-from formatters import MessageFormatter
-from scheduler import ReportScheduler
+from image_renderer import render_netflow_image
+from scheduler import ReportScheduler, BEIJING_TZ
 
-# 配置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -26,171 +25,161 @@ logger = logging.getLogger(__name__)
 
 
 class SmartMoneyBot:
-    """智能资金监控 Telegram Bot"""
-    
+    """Smart Money 净流入图片报告 Bot"""
+
     def __init__(self):
-        # 验证配置
         Config.validate()
-        
-        # 初始化组件
         self.nansen_client = NansenClient(Config.NANSEN_API_KEY)
         self.scheduler = ReportScheduler()
         self.app = None
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # ─────────────────────────────────────────────────────
+    #  核心发送逻辑
+    # ─────────────────────────────────────────────────────
+
+    async def _send_images(self, bot: Bot, timeframes: list[str]):
         """
-        处理 /start 命令
-        """
-        welcome_message = (
-            "🤖 *智能资金监控机器人*\n\n"
-            "欢迎使用！我会定期为您监控以下区块链上的智能资金活动：\n"
-            f"• {', '.join(Config.CHAINS.values())}\n\n"
-            "📊 *可用命令：*\n"
-            "/report - 立即生成监控报告\n"
-            "/status - 查看监控状态\n"
-            "/help - 显示帮助信息\n\n"
-            f"⏰ 自动报告间隔：每 {Config.REPORT_INTERVAL_HOURS} 小时"
-        )
+        获取数据 → 渲染图片 → 发送到 Telegram
         
-        await update.message.reply_text(
-            welcome_message,
-            parse_mode=ParseMode.MARKDOWN
+        Args:
+            bot: Telegram Bot 实例
+            timeframes: 要发送的时间段列表，顺序即发送顺序
+        """
+        data = self.nansen_client.get_screener_for_report(timeframes)
+
+        for tf in timeframes:
+            tokens = data.get(tf, [])
+            try:
+                image_buf: BytesIO = render_netflow_image(tokens, tf)
+                tf_label = {'10m': '10分钟', '1h': '1小时', '6h': '6小时'}.get(tf, tf)
+                await bot.send_photo(
+                    chat_id=Config.TELEGRAM_CHAT_ID,
+                    photo=image_buf,
+                    caption=f"📊 Smart Money 净流入 Top{len(tokens)} | {tf_label}",
+                )
+                logger.info(f"✅ 已发送 {tf} 图片 ({len(tokens)} 个代币)")
+            except Exception as e:
+                logger.error(f"❌ 发送 {tf} 图片失败: {e}")
+                await bot.send_message(
+                    chat_id=Config.TELEGRAM_CHAT_ID,
+                    text=f"⚠️ {tf} 报告生成失败: {str(e)}"
+                )
+
+    # ─────────────────────────────────────────────────────
+    #  定时任务回调
+    # ─────────────────────────────────────────────────────
+
+    async def _job_30min(self):
+        """每30分钟 :30 → 只发 10min"""
+        logger.info("⏰ 触发 30min 任务 → 发送 10min 图片")
+        await self._send_images(self.app.bot, ['10m'])
+
+    async def _job_1h(self):
+        """
+        每整点 :00 → 发送 10min + 1h
+        注意：6h 整点时，6h 任务会"同时"触发，两个任务均会运行。
+        为避免重叠，可在此检查当前小时是否为 6h 整点，若是则跳过
+        （由 6h 任务统一发送 10min+1h+6h）。
+        """
+        now = datetime.now(BEIJING_TZ)
+        if now.hour % 6 == 0:
+            logger.info(f"⏰ {now.hour}:00 是6小时节点，跳过1h任务（由6h任务处理）")
+            return
+        logger.info(f"⏰ 触发 1h 任务 ({now.hour}:00) → 发送 10min + 1h 图片")
+        await self._send_images(self.app.bot, ['10m', '1h'])
+
+    async def _job_6h(self):
+        """每6小时整点 → 发送 10min + 1h + 6h"""
+        now = datetime.now(BEIJING_TZ)
+        logger.info(f"⏰ 触发 6h 任务 ({now.hour}:00) → 发送 10min + 1h + 6h 图片")
+        await self._send_images(self.app.bot, ['10m', '1h', '6h'])
+
+    # ─────────────────────────────────────────────────────
+    #  Telegram 命令
+    # ─────────────────────────────────────────────────────
+
+    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        chains_str = " · ".join(
+            Config.CHAIN_NAMES[c] for c in Config.CHAINS
         )
-    
+        welcome = (
+            "🤖 *Smart Money 净流入监控*\n\n"
+            f"📡 监控链: {chains_str}\n"
+            f"📊 显示: Top{Config.TOP_TOKENS_COUNT} 净流入代币\n\n"
+            "⏰ *发送计划（北京时间）*\n"
+            "  • 每30分钟 (:30) → 10min 图\n"
+            "  • 每整点 (:00) → 10min + 1h 图\n"
+            "  • 每6小时 (0/6/12/18:00) → 10min + 1h + 6h 图\n\n"
+            "📌 *命令*\n"
+            "/report - 立即发送完整报告（3张图）\n"
+            "/status - 查看下次任务时间\n"
+            "/help - 帮助"
+        )
+        await update.message.reply_text(welcome, parse_mode=ParseMode.MARKDOWN)
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        处理 /help 命令
-        """
         help_text = (
             "📖 *使用帮助*\n\n"
             "*监控内容：*\n"
-            "• 监控 ETH、BASE、SOL、BSC 四条链\n"
-            "• 追踪智能资金和机构的交易活动\n"
-            "• 统计 2h、4h、12h、24h 时间段数据\n\n"
-            "*报告内容：*\n"
-            "• 买入最多的代币（按交易额排序）\n"
-            "• 卖出最多的代币（按交易额排序）\n"
-            "• 每个时间段显示前 5 个代币\n\n"
-            "*命令说明：*\n"
-            "/start - 启动机器人\n"
-            "/report - 立即生成报告\n"
-            "/status - 查看监控状态\n"
-            "/help - 显示本帮助信息\n\n"
-            "💡 数据来源：Nansen"
+            "  Nansen Token Screener Smart Money 净流入\n"
+            "  链：ETH · SOL · BASE\n\n"
+            "*图片内容：*\n"
+            f"  排名 / Token / 价格 / 链 / 交易者数 / 净流入金额\n\n"
+            "*命令：*\n"
+            "  /report - 立即生成并发送报告（10min + 1h + 6h）\n"
+            "  /status - 查看下次定时任务时间\n"
+            "  /start  - 重新显示介绍\n\n"
+            "💡 数据源: Nansen Smart Money"
         )
-        
-        await update.message.reply_text(
-            help_text,
-            parse_mode=ParseMode.MARKDOWN
-        )
-    
+        await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        处理 /status 命令
-        """
-        status_message = MessageFormatter.format_status_message()
-        next_run = self.scheduler.get_next_run_time()
-        
-        status_message += f"\n\n⏰ 下次报告时间：{next_run}"
-        
-        await update.message.reply_text(
-            status_message,
-            parse_mode=ParseMode.MARKDOWN
+        next_times = self.scheduler.get_next_run_times()
+        now = datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M')
+        status = (
+            f"✅ *监控运行中*\n\n"
+            f"🕰 当前北京时间: {now}\n\n"
+            f"⏰ *下次任务时间：*\n{next_times}"
         )
-    
+        await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN)
+
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        处理 /report 命令 - 立即生成报告
-        """
-        # 发送"正在生成"消息
-        status_msg = await update.message.reply_text("🔄 正在生成报告，请稍候...")
-        
+        """手动触发完整报告（10min + 1h + 6h）"""
+        msg = await update.message.reply_text("🔄 正在生成报告，请稍候...")
         try:
-            # 生成报告
-            await self.send_report(context)
-            
-            # 删除状态消息
-            await status_msg.delete()
-            
+            await self._send_images(context.bot, ['10m', '1h', '6h'])
+            await msg.delete()
         except Exception as e:
-            logger.error(f"生成报告失败: {str(e)}")
-            await status_msg.edit_text(
-                MessageFormatter.format_error_message(str(e)),
-                parse_mode=ParseMode.MARKDOWN
-            )
-    
-    async def send_report(self, context: ContextTypes.DEFAULT_TYPE):
-        """
-        生成并发送监控报告到指定频道
-        
-        Args:
-            context: Telegram 上下文
-        """
-        try:
-            logger.info("开始生成监控报告...")
-            
-            # 获取监控数据
-            report_data = self.nansen_client.get_monitoring_report()
-            
-            # 格式化消息
-            message = MessageFormatter.format_report(report_data)
-            
-            # 发送到指定频道/聊天
-            await context.bot.send_message(
-                chat_id=Config.TELEGRAM_CHAT_ID,
-                text=message,
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            logger.info("✅ 报告发送成功")
-            
-        except Exception as e:
-            logger.error(f"发送报告失败: {str(e)}")
-            
-            # 发送错误消息
-            error_msg = MessageFormatter.format_error_message(str(e))
-            await context.bot.send_message(
-                chat_id=Config.TELEGRAM_CHAT_ID,
-                text=error_msg,
-                parse_mode=ParseMode.MARKDOWN
-            )
-    
-    async def scheduled_report(self):
-        """
-        定时任务：发送报告
-        """
-        # 创建一个临时的 context 对象用于发送消息
-        await self.send_report(self.app.bot)
-    
+            logger.error(f"生成报告失败: {e}")
+            await msg.edit_text(f"⚠️ 报告生成失败: {str(e)}")
+
+    # ─────────────────────────────────────────────────────
+    #  启动
+    # ─────────────────────────────────────────────────────
+
     def run(self):
-        """
-        启动 bot
-        """
-        # 创建应用
+        """启动 bot"""
         self.app = Application.builder().token(Config.TELEGRAM_BOT_TOKEN).build()
-        
-        # 注册命令处理器
-        self.app.add_handler(CommandHandler("start", self.start_command))
-        self.app.add_handler(CommandHandler("help", self.help_command))
+
+        # 注册命令
+        self.app.add_handler(CommandHandler("start",  self.start_command))
+        self.app.add_handler(CommandHandler("help",   self.help_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
         self.app.add_handler(CommandHandler("report", self.report_command))
-        
-        # 设置定时任务
-        async def send_scheduled_report(context: ContextTypes.DEFAULT_TYPE):
-            await self.send_report(context)
-        
-        self.scheduler.add_job(
-            lambda: asyncio.create_task(send_scheduled_report(self.app.bot)),
-            Config.REPORT_INTERVAL_HOURS
-        )
-        self.scheduler.start()
-        
-        # 启动 bot
-        logger.info("🤖 Bot 启动中...")
-        logger.info(f"📡 监控链: {', '.join(Config.CHAINS.values())}")
-        logger.info(f"⏰ 报告间隔: 每 {Config.REPORT_INTERVAL_HOURS} 小时")
-        
-        # 运行
+
+        # APScheduler 需要在 event loop 内注册异步任务
+        async def post_init(app: Application):
+            self.scheduler.setup_jobs(
+                job_30min=self._job_30min,
+                job_1h=self._job_1h,
+                job_6h=self._job_6h,
+            )
+            self.scheduler.start()
+
+        self.app.post_init = post_init
+
+        logger.info("🤖 Smart Money Bot 启动中...")
+        logger.info(f"📡 监控链: ETH · SOL · BASE")
         self.app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

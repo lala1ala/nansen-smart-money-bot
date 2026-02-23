@@ -3,31 +3,36 @@ name: Smart Money Monitor Bot
 on:
   workflow_dispatch:  # 允许手动触发
   schedule:
-    # 每2小时运行一次 (根据需要调整)
-    - cron: '0 */2 * * *'
+    # 每30分钟运行一次（GitHub Actions 最小精度为5分钟）
+    # 北京时间对应 UTC-8，所以北京 :00 和 :30 对应 UTC :30 和 :00 等
+    # GitHub Actions cron 使用 UTC，这里每30分钟触发，bot 内部通过 APScheduler 控制具体任务
+    - cron: '*/30 * * * *'
 
 jobs:
-  send-report:
+  run-bot-once:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-    
+        python-version: '3.11'
+
+    - name: Install system fonts
+      run: |
+        sudo apt-get install -y fonts-dejavu-core fonts-liberation
+
     - name: Install dependencies
       run: |
         pip install -r requirements.txt
-    
-    - name: Send monitoring report
+
+    - name: Send report based on current time
       env:
         NANSEN_API_KEY: ${{ secrets.NANSEN_API_KEY }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        REPORT_INTERVAL_HOURS: 2
       run: |
         python send_report.py

@@ -13,33 +13,32 @@ class Config:
     
     # Nansen API 配置
     NANSEN_API_KEY = os.getenv('NANSEN_API_KEY')
-    NANSEN_BASE_URL = 'https://api.nansen.ai/v1'
+    NANSEN_BASE_URL = 'https://api.nansen.ai'
     
     # Telegram 配置
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
     
-    # 监控配置
-    REPORT_INTERVAL_HOURS = int(os.getenv('REPORT_INTERVAL_HOURS', '2'))
+    # 时区配置
+    TIMEZONE = 'Asia/Shanghai'  # 北京时间
     
-    # 支持的区块链
-    CHAINS = {
+    # 支持的区块链（ETH, SOL, BASE）
+    CHAINS = ['ethereum', 'solana', 'base']
+    
+    # 链名称映射
+    CHAIN_NAMES = {
         'ethereum': 'ETH',
-        'base': 'BASE',
         'solana': 'SOL',
-        'bnb': 'BNB'  # 修正：BSC 的正确标识符是 'bnb'
+        'base': 'BASE'
     }
     
-    # 监控时间段（小时）- 简化为只显示24小时数据
-    TIME_PERIODS = [24]
+    # 每个时间段显示的代币数量
+    TOP_TOKENS_COUNT = 10
     
     # API 配置
     API_TIMEOUT = 30  # 秒
     API_RETRY_TIMES = 3
     API_RETRY_DELAY = 2  # 秒
-    
-    # 每个时间段显示的代币数量
-    TOP_TOKENS_COUNT = 5  # Top 5 流入 + Top 5 流出
     
     @classmethod
     def validate(cls):

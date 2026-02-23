@@ -1,10 +1,10 @@
 """
 Nansen API 客户端
-处理与 Nansen API 的所有交互
+处理与 Nansen Token Screener API 的所有交互
 """
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
 from config import Config
 
@@ -14,23 +14,15 @@ class NansenClient:
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = 'https://api.nansen.ai'
+        self.base_url = Config.NANSEN_BASE_URL
         self.headers = {
-            'apikey': api_key,  # 注意：Nansen 使用 'apikey' 而不是 'X-API-KEY'
+            'apikey': api_key,
             'Content-Type': 'application/json'
         }
     
     def _make_request(self, endpoint: str, body: Optional[Dict] = None, method='POST') -> Dict:
         """
         发送 API 请求，带重试机制
-        
-        Args:
-            endpoint: API 端点
-            body: POST 请求体
-            method: HTTP 方法 (POST/GET)
-            
-        Returns:
-            API 响应数据
         """
         url = f"{self.base_url}{endpoint}"
         
@@ -61,68 +53,28 @@ class NansenClient:
         
         return {}
     
-    def get_smart_money_holdings(
-        self, 
-        chains: List[str],
-        limit: int = 100,
-        include_24h_changes_only: bool = True
-    ) -> List[Dict]:
-        """
-        获取智能资金的代币持仓数据
-        
-        Args:
-            chains: 区块链列表 (["ethereum"], ["solana"], etc.)
-            limit: 返回结果数量
-            include_24h_changes_only: 仅包含24小时有变化的代币
-            
-        Returns:
-            代币列表，包含持仓变化数据
-        """
-        # 构建请求体 - 移除了不支持的 timeframe 参数
-        body = {
-            'chains': chains,
-            'pagination': {
-                'limit': limit,
-                'offset': 0
-            },
-            'order_by': [
-                {
-                    'field': 'value_usd',
-                    'direction': 'DESC'
-                }
-            ]
-        }
-        
-        # 不再过滤 - 显示所有智能资金持仓数据
-        # Smart money holdings 的变化通常很少，过滤会丢失大量有价值的数据
-        
-        try:
-            # 调用 Nansen API
-            data = self._make_request('/api/v1/smart-money/holdings', body, method='POST')
-            return data.get('data', [])
-        except Exception as e:
-            print(f"获取 {chains} 智能资金数据失败: {str(e)}")
-            return []
-    
-    def get_token_screener(
+    def get_token_screener_netflow(
         self,
-        chains: List[str],
-        timeframe: str = '24h',
-        only_smart_money: bool = True,
-        limit: int = 50
+        timeframe: str,
+        chains: Optional[List[str]] = None,
+        limit: int = None
     ) -> List[Dict]:
         """
-        使用 token screener 获取代币数据
+        获取 Token Screener 的 Smart Money 净流入数据
         
         Args:
-            chains: 区块链列表
-            timeframe: 时间范围
-            only_smart_money: 仅智能资金活跃的代币
+            timeframe: 时间段，支持 '10m', '1h', '6h'
+            chains: 区块链列表，None 表示使用 config 默认值
             limit: 返回结果数量
             
         Returns:
-            代币列表
+            按净流入降序排列的代币列表
         """
+        if chains is None:
+            chains = Config.CHAINS
+        if limit is None:
+            limit = Config.TOP_TOKENS_COUNT
+        
         body = {
             'chains': chains,
             'timeframe': timeframe,
@@ -131,111 +83,39 @@ class NansenClient:
                 'offset': 0
             },
             'filters': {
-                'only_smart_money': only_smart_money
+                'only_smart_money': True
             },
             'sort': [{
-                'field': 'smart_money_buy_volume',
+                'field': 'net_flow',
                 'direction': 'DESC'
             }]
         }
         
         try:
             data = self._make_request('/api/v1/token-screener', body, method='POST')
-            return data.get('data', [])
+            tokens = data.get('data', [])
+            
+            # 只保留净流入为正的代币（真正是聪明钱买入）
+            positive_flow = [t for t in tokens if t.get('net_flow', 0) > 0]
+            return positive_flow[:limit]
+            
         except Exception as e:
-            print(f"获取 token screener 数据失败: {str(e)}")
+            print(f"获取 Token Screener 数据失败 ({timeframe}): {str(e)}")
             return []
     
-    def aggregate_trading_data(
-        self,
-        chain: str,
-        hours: int
-    ) -> Dict[str, List[Dict]]:
+    def get_screener_for_report(self, timeframes: List[str]) -> Dict[str, List[Dict]]:
         """
-        聚合智能资金净流入/流出数据（按金额）
+        批量获取多个时间段的数据
         
         Args:
-            chain: 区块链名称
-            hours: 时间段（小时）
+            timeframes: 时间段列表，例如 ['10m', '1h', '6h']
             
         Returns:
-            包含 'net_inflows' 和 'net_outflows' 的字典
+            { '10m': [...], '1h': [...], '6h': [...] }
         """
-        # 获取智能资金持仓数据
-        holdings = self.get_smart_money_holdings([chain], limit=200)
-        
-        net_inflows = []
-        net_outflows = []
-        
-        for item in holdings:
-            # 获取数据
-            balance_change_pct = item.get('balance_24h_percent_change', 0)
-            value_usd = item.get('value_usd', 0)
-            
-            # 跳过变化太小的（< 0.01%）
-            if abs(balance_change_pct) < 0.01:
-                continue
-            
-            # 计算净流入/流出金额（美元）
-            net_flow_usd = value_usd * balance_change_pct / 100
-            
-            # 获取代币信息
-            symbol = item.get('token_symbol', 'Unknown')
-            
-            token_info = {
-                'token': symbol,
-                'net_flow_usd': abs(net_flow_usd),  # 绝对值用于排序
-                'value_usd': value_usd,
-                'holders': item.get('holders_count', 0)
-            }
-            
-            # 分类：净流入 vs 净流出
-            if net_flow_usd > 0:
-                net_inflows.append(token_info)
-            else:
-                net_outflows.append(token_info)
-        
-        # 按净流动金额排序（降序）
-        net_inflows.sort(key=lambda x: x['net_flow_usd'], reverse=True)
-        net_outflows.sort(key=lambda x: x['net_flow_usd'], reverse=True)
-        
-        # 只返回 Top 5
-        return {
-            'net_inflows': net_inflows[:5],
-            'net_outflows': net_outflows[:5]
-        }
-
-    
-    def get_monitoring_report(self) -> Dict:
-        """
-        生成完整的监控报告
-        
-        Returns:
-            包含所有链和时间段的数据
-        """
-        report = {
-            'timestamp': datetime.now().isoformat(),
-            'data': {}
-        }
-        
-        for hours in Config.TIME_PERIODS:
-            report['data'][f'{hours}h'] = {}
-            
-            for chain_id, chain_name in Config.CHAINS.items():
-                print(f"正在获取 {chain_name} {hours}小时数据...")
-                
-                try:
-                    chain_data = self.aggregate_trading_data(chain_id, hours)
-                    report['data'][f'{hours}h'][chain_name] = chain_data
-                except Exception as e:
-                    print(f"获取 {chain_name} 数据失败: {str(e)}")
-                    report['data'][f'{hours}h'][chain_name] = {
-                        'buys': [],
-                        'sells': [],
-                        'error': str(e)
-                    }
-                
-                # 避免 API 限流
-                time.sleep(1)
-        
-        return report
+        result = {}
+        for tf in timeframes:
+            print(f"正在获取 {tf} Smart Money 净流入数据...")
+            result[tf] = self.get_token_screener_netflow(tf)
+            time.sleep(1)  # 避免限流
+        return result
