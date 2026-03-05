@@ -3,10 +3,9 @@ name: Smart Money Monitor Bot
 on:
   workflow_dispatch:  # 允许手动触发
   schedule:
-    # 每30分钟运行一次（GitHub Actions 最小精度为5分钟）
-    # 北京时间对应 UTC-8，所以北京 :00 和 :30 对应 UTC :30 和 :00 等
-    # GitHub Actions cron 使用 UTC，这里每30分钟触发，bot 内部通过 APScheduler 控制具体任务
-    - cron: '*/30 * * * *'
+    # 每6小时运行一次，对应北京时间 0:00 / 6:00 / 12:00 / 18:00
+    # 北京时间 UTC+8，所以 UTC 对应: 16:00 / 22:00 / 4:00 / 10:00
+    - cron: '0 16,22,4,10 * * *'
 
 jobs:
   run-bot-once:

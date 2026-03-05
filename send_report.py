@@ -1,10 +1,7 @@
 """
 GitHub Actions 专用脚本
-每30分钟被 GitHub Actions 调用一次。
-根据当前北京时间决定发送哪些时间段的图片：
-  - 每30分钟 (:30) → 10min
-  - 每整点   (:00) → 10min + 1h
-  - 6小时整点 (0/6/12/18:00 BJT) → 10min + 1h + 6h
+每6小时被 GitHub Actions 调用一次（北京时间 0/6/12/18:00）。
+只发送 6h Smart Money 净流入数据。
 """
 import asyncio
 import sys
@@ -21,21 +18,11 @@ BEIJING_TZ = pytz.timezone('Asia/Shanghai')
 
 
 def get_timeframes_for_now() -> list[str]:
-    """根据当前北京时间决定要发送的时间段"""
+    """始终只发送 6h 数据"""
     now = datetime.now(BEIJING_TZ)
-    minute = now.minute
-    hour   = now.hour
-
-    if minute == 0:
-        if hour % 6 == 0:
-            print(f"🕐 北京时间 {hour:02d}:00 → 发送 10min + 1h + 6h")
-            return ['10m', '1h', '6h']
-        else:
-            print(f"🕐 北京时间 {hour:02d}:00 → 发送 10min + 1h")
-            return ['10m', '1h']
-    else:
-        print(f"🕐 北京时间 {hour:02d}:{minute:02d} → 发送 10min")
-        return ['10m']
+    hour = now.hour
+    print(f"🕐 北京时间 {hour:02d}:{now.minute:02d} → 发送 6h Smart Money 净流入")
+    return ['6h']
 
 
 async def send_report_once():
@@ -56,7 +43,7 @@ async def send_report_once():
             print(f"📊 {tf}: 获取到 {len(tokens)} 个代币")
 
             image_buf = render_netflow_image(tokens, tf)
-            tf_label = {'10m': '10分钟', '1h': '1小时', '6h': '6小时'}.get(tf, tf)
+            tf_label = {'6h': '6小时', '1h': '1小时', '24h': '24小时'}.get(tf, tf)
 
             await bot.send_photo(
                 chat_id=Config.TELEGRAM_CHAT_ID,

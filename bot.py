@@ -69,30 +69,11 @@ class SmartMoneyBot:
     #  定时任务回调
     # ─────────────────────────────────────────────────────
 
-    async def _job_30min(self):
-        """每30分钟 :30 → 只发 10min"""
-        logger.info("⏰ 触发 30min 任务 → 发送 10min 图片")
-        await self._send_images(self.app.bot, ['10m'])
-
-    async def _job_1h(self):
-        """
-        每整点 :00 → 发送 10min + 1h
-        注意：6h 整点时，6h 任务会"同时"触发，两个任务均会运行。
-        为避免重叠，可在此检查当前小时是否为 6h 整点，若是则跳过
-        （由 6h 任务统一发送 10min+1h+6h）。
-        """
-        now = datetime.now(BEIJING_TZ)
-        if now.hour % 6 == 0:
-            logger.info(f"⏰ {now.hour}:00 是6小时节点，跳过1h任务（由6h任务处理）")
-            return
-        logger.info(f"⏰ 触发 1h 任务 ({now.hour}:00) → 发送 10min + 1h 图片")
-        await self._send_images(self.app.bot, ['10m', '1h'])
-
     async def _job_6h(self):
-        """每6小时整点 → 发送 10min + 1h + 6h"""
+        """每6小时整点 (0/6/12/18:00 北京时间) → 发送 6h Smart Money 净流入"""
         now = datetime.now(BEIJING_TZ)
-        logger.info(f"⏰ 触发 6h 任务 ({now.hour}:00) → 发送 10min + 1h + 6h 图片")
-        await self._send_images(self.app.bot, ['10m', '1h', '6h'])
+        logger.info(f"⏰ 触发 6h 任务 ({now.hour}:00) → 发送 6h 图片")
+        await self._send_images(self.app.bot, ['6h'])
 
     # ─────────────────────────────────────────────────────
     #  Telegram 命令
@@ -107,11 +88,9 @@ class SmartMoneyBot:
             f"📡 监控链: {chains_str}\n"
             f"📊 显示: Top{Config.TOP_TOKENS_COUNT} 净流入代币\n\n"
             "⏰ *发送计划（北京时间）*\n"
-            "  • 每30分钟 (:30) → 10min 图\n"
-            "  • 每整点 (:00) → 10min + 1h 图\n"
-            "  • 每6小时 (0/6/12/18:00) → 10min + 1h + 6h 图\n\n"
+            "  • 每6小时 (0/6/12/18:00) → 6h Smart Money 净流入\n\n"
             "📌 *命令*\n"
-            "/report - 立即发送完整报告（3张图）\n"
+            "/report - 立即发送 6h 报告\n"
             "/status - 查看下次任务时间\n"
             "/help - 帮助"
         )
@@ -121,12 +100,12 @@ class SmartMoneyBot:
         help_text = (
             "📖 *使用帮助*\n\n"
             "*监控内容：*\n"
-            "  Nansen Token Screener Smart Money 净流入\n"
+            "  Nansen Token Screener Smart Money 净流入 (6小时)\n"
             "  链：ETH · SOL · BASE\n\n"
             "*图片内容：*\n"
             f"  排名 / Token / 价格 / 链 / 交易者数 / 净流入金额\n\n"
             "*命令：*\n"
-            "  /report - 立即生成并发送报告（10min + 1h + 6h）\n"
+            "  /report - 立即生成并发送 6h 报告\n"
             "  /status - 查看下次定时任务时间\n"
             "  /start  - 重新显示介绍\n\n"
             "💡 数据源: Nansen Smart Money"
@@ -144,10 +123,10 @@ class SmartMoneyBot:
         await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN)
 
     async def report_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """手动触发完整报告（10min + 1h + 6h）"""
-        msg = await update.message.reply_text("🔄 正在生成报告，请稍候...")
+        """手动触发 6h 报告"""
+        msg = await update.message.reply_text("🔄 正在生成 6h 报告，请稍候...")
         try:
-            await self._send_images(context.bot, ['10m', '1h', '6h'])
+            await self._send_images(context.bot, ['6h'])
             await msg.delete()
         except Exception as e:
             logger.error(f"生成报告失败: {e}")
@@ -170,8 +149,6 @@ class SmartMoneyBot:
         # APScheduler 需要在 event loop 内注册异步任务
         async def post_init(app: Application):
             self.scheduler.setup_jobs(
-                job_30min=self._job_30min,
-                job_1h=self._job_1h,
                 job_6h=self._job_6h,
             )
             self.scheduler.start()
