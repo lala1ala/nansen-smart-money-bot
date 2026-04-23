@@ -47,8 +47,11 @@ class NansenClient:
                 return response.json()
             
             except requests.exceptions.RequestException as e:
+                err_text = ""
+                if hasattr(e, 'response') and e.response:
+                    err_text = f" - {e.response.text}"
                 if attempt == Config.API_RETRY_TIMES - 1:
-                    raise Exception(f"API 请求失败: {str(e)}")
+                    raise Exception(f"API 请求失败: {str(e)}{err_text}")
                 time.sleep(Config.API_RETRY_DELAY)
         
         return {}
@@ -119,3 +122,50 @@ class NansenClient:
             result[tf] = self.get_token_screener_netflow(tf)
             time.sleep(1)  # 避免限流
         return result
+
+    def get_hyperliquid_smart_money(self, limit: int = 20) -> List[Dict]:
+        """
+        获取 Hyperliquid Smart Money 24小时流入数据
+        根据 Nansen AI 的指导，使用 token-screener 并指定 chains=['hyperliquid']
+        """
+        body = {
+            'chains': ['hyperliquid'],
+            'timeframe': '24h',
+            'pagination': {
+                'limit': limit,
+                'offset': 0
+            },
+            'filters': {
+                'only_smart_money': True
+            },
+            'sort': [{
+                'field': 'netflow',
+                'direction': 'DESC'
+            }]
+        }
+        
+        try:
+            data = self._make_request('/api/v1/token-screener', body, method='POST')
+            tokens = data.get('data', [])
+            positive_flow = [t for t in tokens if t.get('netflow', 0) > 0]
+            return positive_flow[:limit]
+        except Exception as e:
+            print(f"获取 Hyperliquid 数据失败: {str(e)}")
+            return []
+            
+    def get_whale_flows(self, token_address: str, chain: str = 'ethereum') -> Dict:
+        """
+        获取单个代币的 Whale 流入数据
+        """
+        body = {
+            'tokenAddress': token_address,
+            'chain': chain,
+            'lookbackPeriod': '1d'
+        }
+        try:
+            # According to Nansen AI: token_recent_flows_summary
+            data = self._make_request('/api/v1/token_recent_flows_summary', body, method='POST')
+            return data
+        except Exception as e:
+            # Ignore failure since it's an internal test
+            return {}
