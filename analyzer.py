@@ -35,6 +35,8 @@ def main():
     
     db = DailyStatsDB()
     coinalyze = CoinalyzeClient("84f62b06-6dae-4cf3-aff0-6e3ad52ae825")
+    sm_tokens_db = []
+    oi_tokens_db = []
     
     print("1. 正在获取 Nansen Smart Money 24h 增持 (链上聪明钱)...")
     sm_tokens_db = get_nansen_sm_inflows()
@@ -55,6 +57,20 @@ def main():
     report_lines = []
     report_lines.append(f"📊 *Smart Money & OI 每日共振分析报告 ({date_str})*")
     report_lines.append("="*35)
+
+    # 独立榜单 Top N
+    report_lines.append("\n🌟 *【今日资金单边流入 Top 10】*")
+    if sm_tokens_db:
+        sm_top_str = ", ".join([f"`{t['token']}`" for t in sm_tokens_db[:10]])
+        report_lines.append(f"  • *链上聪明钱*: {sm_top_str}")
+    else:
+        report_lines.append(f"  • *链上聪明钱*: (暂无数据)")
+        
+    if oi_tokens_db:
+        oi_top_str = ", ".join([f"`{t['token']}`(+{t['value']:.1f}%)" for t in oi_tokens_db[:10]])
+        report_lines.append(f"  • *全网OI暴涨*: {oi_top_str}")
+    else:
+        report_lines.append(f"  • *全网OI暴涨*: (暂无数据)")
 
     # 横向对比
     all_sources = ['nansen_sm', 'market_oi']
