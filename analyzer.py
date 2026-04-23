@@ -68,21 +68,35 @@ def main():
             display_sources = [s.replace('nansen_sm', '链上聪明钱').replace('market_oi', '全网OI暴涨') for s in sources]
             report_lines.append(f"  • `{symbol:<8}` ({len(sources)}/2) -> {', '.join(display_sources)}")
 
-    # 纵向对比
+    # 纵向对比 (3天)
     report_lines.append("\n📈 *【近3天持续活跃榜】*")
-    long_trends = db.get_longitudinal_tokens(date_str, days=3, min_appearances=1)
-    if not long_trends:
-        report_lines.append("  - 无持续活跃代币")
+    long_trends_3d = db.get_longitudinal_tokens(date_str, days=3, min_appearances=1)
+    if not long_trends_3d:
+        report_lines.append("  - 无近期持续活跃代币 (3天)")
     else:
-        for symbol, data in long_trends.items():
+        for symbol, data in long_trends_3d.items():
             details = []
             for src, count in data.items():
                 if count >= 1:
                     clean_src = src.replace('nansen_sm', '链上').replace('market_oi', 'OI')
                     details.append(f"{clean_src}({count}天)")
-            
             if details:
-                report_lines.append(f"  • `{symbol:<8}` -> {', '.join(details)}")
+                report_lines.append(f"  • `{symbol:<8}` (3天内) -> {', '.join(details)}")
+
+    # 纵向对比 (7天)
+    report_lines.append("\n👑 *【近7天高频常客榜】* (至少上榜2天)")
+    long_trends_7d = db.get_longitudinal_tokens(date_str, days=7, min_appearances=2)
+    if not long_trends_7d:
+        report_lines.append("  - 无常客代币 (7天)")
+    else:
+        for symbol, data in long_trends_7d.items():
+            details = []
+            for src, count in data.items():
+                if count >= 2:
+                    clean_src = src.replace('nansen_sm', '链上').replace('market_oi', 'OI')
+                    details.append(f"{clean_src}({count}次)")
+            if details:
+                report_lines.append(f"  • `{symbol:<8}` (7天内) -> {', '.join(details)}")
 
     final_report = "\n".join(report_lines)
     print(final_report)
