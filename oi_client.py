@@ -7,121 +7,127 @@ class CoinalyzeClient:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.coinalyze.net/v1"
-        self.headers = {
-            'api_key': self.api_key
-        }
+        # 兼容性：同时提供 Header 和 Query Param 认证
+        self.headers = {'api_key': self.api_key}
+
+    def _get(self, endpoint: str, params: Dict = None) -> requests.Response:
+        """统一的带有 API Key 的 GET 请求封装"""
+        if params is None:
+            params = {}
+        # 为了提高兼容性，在 query param 中也带上 api_key
+        params['api_key'] = self.api_key
+        url = f"{self.base_url}/{endpoint}"
+        return requests.get(url, headers=self.headers, params=params, timeout=15)
 
     def get_supported_markets(self) -> List[Dict]:
         """获取所有支持的市场"""
-        url = f"{self.base_url}/future-markets"
-        response = requests.get(url, headers=self.headers)
-        if response.status_code == 200:
-            return response.json()
-        print(f"Coinalyze 市场抓取失败: {response.text}")
+        try:
+            res = self._get("future-markets")
+            if res.status_code == 200:
+                return res.json()
+            print(f"Coinalyze Markets fail: {res.status_code} - {res.text}")
+        except Exception as e:
+            print(f"Coinalyze Markets exception: {e}")
+        return []
+
+    def get_current_oi(self, symbols: str) -> List[Dict]:
+        """获取当前实时 OI"""
+        try:
+            res = self._get("open-interest", params={"symbols": symbols})
+            if res.status_code == 200:
+                return res.json()
+            print(f"Coinalyze current OI fail: {res.status_code} - {res.text}")
+        except Exception as e:
+            print(f"Coinalyze current OI exception: {e}")
         return []
 
     def get_oi_history(self, symbols: str, interval: str = "daily") -> List[Dict]:
-        """
-        获取过去 24H 的 OI 数据 (Open Interest)
-        symbols: 多个用逗号分隔，如 "BTCUSDT_PERP.A,ETHUSDT_PERP.A"
-        """
-        url = f"{self.base_url}/open-interest-history"
-        
-        # 获取过去 5 天的数据以确保有足够的点计算增长
+        """获取历史 OI 数据 (OHLC)"""
         now = int(time.time())
         five_days_ago = now - (5 * 24 * 3600)
-        
         params = {
             "symbols": symbols,
             "interval": interval,
             "from": five_days_ago,
             "to": now
         }
-        res = requests.get(url, headers=self.headers, params=params)
-        if res.status_code == 200:
-            return res.json()
-        print(f"OI History Fetch fail for {symbols[:20]}...: {res.text}")
+        try:
+            res = self._get("open-interest-history", params=params)
+            if res.status_code == 200:
+                return res.json()
+            print(f"OI History fail for {symbols[:30]}: {res.status_code} - {res.text}")
+        except Exception as e:
+            print(f"OI History exception: {e}")
         return []
 
     def get_top_oi_gainers(self, limit: int = 20) -> List[Dict]:
-        """
-        计算 24h OI 增长最多的代币
-        这是一个组合逻辑：由于 Coinalyze 没有直接的 "Top OI gainers" 端点，
-        我们需要获取市场列表，然后分批检查 OI，或者利用 binance 的数据作为参考，然后 Coinalyze 确认。
-        另外，有 /open-interest 接口可以直接获取最新的全市场 OI，但需要自己处理缓存/差值。
-        我们先用 /open-interest 结合我们自己实现的按天比对，但最好是获取 24h history。
-        为了不过载 API，通常可以直接抓 Binance 市场的，因为绝大部分 OI 在 Binance。
-        """
+        """精简版抓取策略：先按实时金额筛选，再回溯增长"""
         markets = self.get_supported_markets()
-        # 筛选 Binance 且 USDT 合约
-        binance_perps = [m for m in markets if m.get('exchange') == 'A' and 'USDT' in m.get('symbol')]
+        if not markets:
+            return []
         
-        # 等待一下，避免连续调用接口过快
-        time.sleep(2)
+        # 1. 筛选出 Binance USDT 永续合约
+        binance_perps = [m['symbol'] for m in markets if m.get('exchange') == 'A' and 'USDT' in m.get('symbol')]
+        if not binance_perps:
+            return []
 
-        # 为了高效，分批获取
-        results = []
-        batch_size = 20 # Coinalyze API 限制单次请求最多 20 个 symbol
+        # 2. 获取这些币种的当前实时 OI 金额，以便找出最“重要”的币种
+        # 分批获取实时 OI (每批 20 个)
+        current_oi_data = []
+        for i in range(0, min(len(binance_perps), 100), 20):
+            batch = binance_perps[i:i+20]
+            batch_data = self.get_current_oi(",".join(batch))
+            if batch_data:
+                current_oi_data.extend(batch_data)
+            time.sleep(1) # 实时接口通常限制较松，稍微等一下即可
         
-        # 限制抓取前 2 批 (40个币)，对每日报告来说已经足够覆盖主要波动
-        for i in range(0, min(len(binance_perps), 40), batch_size):
-            batch = binance_perps[i:i+batch_size]
-            symbols = ",".join([m['symbol'] for m in batch])
+        if not current_oi_data:
+            return []
+
+        # 按金额降序排列，取前 30 个重点关注，减少后续昂贵的历史 API 调用
+        top_active_symbols = sorted(current_oi_data, key=lambda x: x.get('value', 0), reverse=True)[:30]
+        active_symbols_str = [x['symbol'] for x in top_active_symbols]
+
+        # 3. 对这 30 个重点币种，分批获取历史数据（每批 20 个，大幅减少请求次数）
+        results = []
+        for i in range(0, len(active_symbols_str), 20):
+            batch = active_symbols_str[i:i+20]
+            symbols_query = ",".join(batch)
             
-            # 重试逻辑
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    # 获取 daily history
-                    history = self.get_oi_history(symbols, interval="daily")
-                    if history:
-                        for item in history:
-                            sym = item.get('symbol', '').replace('USDT_PERP.A', '')
-                            h_data = item.get('history', [])
-                            if len(h_data) >= 2:
-                                try:
-                                    # history 是一个数组, 每个元素包含 [timestamp, o, h, l, c]
-                                    # 比较最后一天和前一天
+            # 由于历史 API 极其昂贵且频率受限，我们在这里使用更长的延迟和重试
+            for attempt in range(3):
+                history = self.get_oi_history(symbols_query)
+                if history:
+                    for item in history:
+                        sym = item.get('symbol', '').replace('USDT_PERP.A', '')
+                        h_data = item.get('history', [])
+                        if len(h_data) >= 2:
+                            try:
+                                # 尝试 5 元素 OHLC 结构
+                                if len(h_data[-1]) >= 5:
                                     prev_c = h_data[-2][4]
                                     curr_c = h_data[-1][4]
-                                    if prev_c > 0:
-                                        change_pct = (curr_c - prev_c) / prev_c * 100
-                                        results.append({
-                                            'symbol': sym,
-                                            'oi_change_pct': change_pct,
-                                            'oi_value': curr_c
-                                        })
-                                except (IndexError, KeyError) as e:
-                                    print(f"Structure error for {sym}: {e}, h_data sample: {h_data[0] if h_data else 'None'}")
-                                    # 如果结构不对，可能是 [timestamp, value]
-                                    try:
-                                        prev_c = h_data[-2][1]
-                                        curr_c = h_data[-1][1]
-                                        if prev_c > 0:
-                                            change_pct = (curr_c - prev_c) / prev_c * 100
-                                            results.append({
-                                                'symbol': sym,
-                                                'oi_change_pct': change_pct,
-                                                'oi_value': curr_c
-                                            })
-                                            print(f"Found match using index 1 for {sym}")
-                                    except:
-                                        pass
-                        break # 成功获取，退出重试
-                    else:
-                        print(f"Batch {i//batch_size + 1} returned empty history, symbols: {symbols[:30]}... retry {attempt+1}")
-                        time.sleep(5) # 等待更长时间
-                except Exception as e:
-                    print(f"Coinalyze batch fail: {e}")
+                                else: # 尝试 2 元素 [ts, val] 结构
+                                    prev_c = h_data[-2][1]
+                                    curr_c = h_data[-1][1]
+                                
+                                if prev_c > 0:
+                                    change_pct = (curr_c - prev_c) / prev_c * 100
+                                    results.append({'symbol': sym, 'oi_change_pct': change_pct, 'oi_value': curr_c})
+                            except Exception:
+                                pass
+                    break # 成功获取本批次，跳出重试
+                else:
+                    print(f"Batch {i//20 + 1} history empty, symbol sample: {batch[0]}... retry {attempt+1}")
+                    time.sleep(10) # 429 后至少等 10 秒
             
-            time.sleep(5) # 增加批次间间隔，Coinalyze 免费版频率限制较低
+            time.sleep(10) # 批次间强制等待 10 秒以规避频率限制
 
+        # 4. 排序结果
         results.sort(key=lambda x: x['oi_change_pct'], reverse=True)
         return results[:limit]
 
 if __name__ == "__main__":
     client = CoinalyzeClient("84f62b06-6dae-4cf3-aff0-6e3ad52ae825")
     print("Test fetching OI gainers...")
-    data = client.get_top_oi_gainers(limit=5)
-    for d in data:
-        print(d)
+    print(client.get_top_oi_gainers(limit=5))
