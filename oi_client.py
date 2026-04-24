@@ -27,14 +27,14 @@ class CoinalyzeClient:
         """
         url = f"{self.base_url}/open-interest-history"
         
-        # 获取过去 3 天的数据以确保有足够的点计算增长
+        # 获取过去 5 天的数据以确保有足够的点计算增长
         now = int(time.time())
-        three_days_ago = now - (3 * 24 * 3600)
+        five_days_ago = now - (5 * 24 * 3600)
         
         params = {
             "symbols": symbols,
             "interval": interval,
-            "from": three_days_ago,
+            "from": five_days_ago,
             "to": now
         }
         res = requests.get(url, headers=self.headers, params=params)

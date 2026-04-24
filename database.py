@@ -55,7 +55,7 @@ class DailyStatsDB:
             # 获取指定日期的所有指定来源数据
             placeholders = ','.join(['?'] * len(sources))
             query = f'''
-                SELECT token, source 
+                SELECT DISTINCT token, source 
                 FROM token_stats 
                 WHERE date = ? AND source IN ({placeholders})
             '''
@@ -63,15 +63,15 @@ class DailyStatsDB:
             cursor.execute(query, params)
             rows = cursor.fetchall()
 
-            # 聚合数据
+            # 聚合数据 (使用 set 避免单源重复)
             token_sources = {}
             for token, source in rows:
                 if token not in token_sources:
-                    token_sources[token] = []
-                token_sources[token].append(source)
+                    token_sources[token] = set()
+                token_sources[token].add(source)
             
-            # 过滤
-            return {k: v for k, v in token_sources.items() if len(v) >= min_overlap}
+            # 过滤并转换回 list
+            return {k: list(v) for k, v in token_sources.items() if len(v) >= min_overlap}
 
     def get_longitudinal_tokens(self, end_date: str, days: int, min_appearances: int = 2) -> Dict[str, Dict]:
         """

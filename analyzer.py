@@ -19,14 +19,20 @@ def get_nansen_sm_inflows():
     
     if res.status_code == 200:
         items = res.json().get('data', [])
-        tokens = []
-        for idx, t in enumerate(items[:30]):
+        tokens_map = {} # 使用 symbol 作为 key 去重
+        for idx, t in enumerate(items[:50]): # 扩大搜索范围以防主币重复
             sym = t.get('token_symbol', 'UNKNOWN')
             if sym.upper() not in ['USDT', 'USDC', 'DAI']:
                 val = float(t.get('value_usd', 0) or 0)
                 chg = float(t.get('balance_24h_percent_change', 0) or 0)
-                tokens.append({'token': sym, 'rank': idx+1, 'value': val * (chg/100)})
-        return tokens
+                net_inflow = val * (chg/100)
+                
+                if sym not in tokens_map or net_inflow > tokens_map[sym]['value']:
+                    tokens_map[sym] = {'token': sym, 'rank': idx+1, 'value': net_inflow}
+        
+        # 转换回列表并按数值排序
+        sorted_tokens = sorted(tokens_map.values(), key=lambda x: x['value'], reverse=True)
+        return sorted_tokens[:30]
     return []
 
 def main():
@@ -52,10 +58,12 @@ def main():
     coinalyze = CoinalyzeClient(coinalyze_api_key)
     try:
         oi_tokens_raw = coinalyze.get_top_oi_gainers(limit=30)
+        if not oi_tokens_raw:
+            print("⚠️ Coinalyze returned no OI gainers. Check API status/limits.")
         oi_tokens_db = [{'token': t['symbol'], 'rank': idx+1, 'value': t['oi_change_pct']} for idx, t in enumerate(oi_tokens_raw)]
         db.save_daily_snapshot(date_str, 'market_oi', oi_tokens_db)
     except Exception as e:
-        print(f"OI Fetch failed: {e}")
+        print(f"❌ OI Fetch failed with exception: {e}")
 
     print("3. 交叉查询 Whale / Hyperliquid (暂不适用原生发现接口)...")
     
