@@ -20,19 +20,27 @@ class CoinalyzeClient:
         print(f"Coinalyze 市场抓取失败: {response.text}")
         return []
 
-    def get_oi_history(self, symbols: str, interval: str = "1day") -> List[Dict]:
+    def get_oi_history(self, symbols: str, interval: str = "daily") -> List[Dict]:
         """
         获取过去 24H 的 OI 数据 (Open Interest)
         symbols: 多个用逗号分隔，如 "BTCUSDT_PERP.A,ETHUSDT_PERP.A"
         """
         url = f"{self.base_url}/open-interest-history"
+        
+        # 获取过去 3 天的数据以确保有足够的点计算增长
+        now = int(time.time())
+        three_days_ago = now - (3 * 24 * 3600)
+        
         params = {
             "symbols": symbols,
-            "interval": interval
+            "interval": interval,
+            "from": three_days_ago,
+            "to": now
         }
         res = requests.get(url, headers=self.headers, params=params)
         if res.status_code == 200:
             return res.json()
+        print(f"OI History Fetch fail for {symbols[:20]}...: {res.text}")
         return []
 
     def get_top_oi_gainers(self, limit: int = 20) -> List[Dict]:
@@ -48,36 +56,65 @@ class CoinalyzeClient:
         # 筛选 Binance 且 USDT 合约
         binance_perps = [m for m in markets if m.get('exchange') == 'A' and 'USDT' in m.get('symbol')]
         
+        # 等待一下，避免连续调用接口过快
+        time.sleep(2)
+
         # 为了高效，分批获取
         results = []
-        batch_size = 30
+        batch_size = 20 # Coinalyze API 限制单次请求最多 20 个 symbol
         
-        # 只取前 150 个主流币，或者全取可能需要 10 几个请求
-        # 作为示例，我们限制抓取前 5 批
-        for i in range(0, min(len(binance_perps), 150), batch_size):
+        # 限制抓取前 2 批 (40个币)，对每日报告来说已经足够覆盖主要波动
+        for i in range(0, min(len(binance_perps), 40), batch_size):
             batch = binance_perps[i:i+batch_size]
             symbols = ",".join([m['symbol'] for m in batch])
-            try:
-                # 获取 daily history
-                history = self.get_oi_history(symbols, interval="1day")
-                for item in history:
-                    sym = item.get('symbol', '').replace('USDT_PERP.A', '')
-                    h_data = item.get('history', [])
-                    if len(h_data) >= 2:
-                        # history 是一个数组, 每个元素包含 [timestamp, o, h, l, c]
-                        # 比较最后一天和前一天
-                        prev_c = h_data[-2][4]
-                        curr_c = h_data[-1][4]
-                        if prev_c > 0:
-                            change_pct = (curr_c - prev_c) / prev_c * 100
-                            results.append({
-                                'symbol': sym,
-                                'oi_change_pct': change_pct,
-                                'oi_value': curr_c
-                            })
-            except Exception as e:
-                print(f"Coinalyze batch fail: {e}")
-            time.sleep(0.5)
+            
+            # 重试逻辑
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # 获取 daily history
+                    history = self.get_oi_history(symbols, interval="daily")
+                    if history:
+                        for item in history:
+                            sym = item.get('symbol', '').replace('USDT_PERP.A', '')
+                            h_data = item.get('history', [])
+                            if len(h_data) >= 2:
+                                try:
+                                    # history 是一个数组, 每个元素包含 [timestamp, o, h, l, c]
+                                    # 比较最后一天和前一天
+                                    prev_c = h_data[-2][4]
+                                    curr_c = h_data[-1][4]
+                                    if prev_c > 0:
+                                        change_pct = (curr_c - prev_c) / prev_c * 100
+                                        results.append({
+                                            'symbol': sym,
+                                            'oi_change_pct': change_pct,
+                                            'oi_value': curr_c
+                                        })
+                                except (IndexError, KeyError) as e:
+                                    print(f"Structure error for {sym}: {e}, h_data sample: {h_data[0] if h_data else 'None'}")
+                                    # 如果结构不对，可能是 [timestamp, value]
+                                    try:
+                                        prev_c = h_data[-2][1]
+                                        curr_c = h_data[-1][1]
+                                        if prev_c > 0:
+                                            change_pct = (curr_c - prev_c) / prev_c * 100
+                                            results.append({
+                                                'symbol': sym,
+                                                'oi_change_pct': change_pct,
+                                                'oi_value': curr_c
+                                            })
+                                            print(f"Found match using index 1 for {sym}")
+                                    except:
+                                        pass
+                        break # 成功获取，退出重试
+                    else:
+                        print(f"Batch {i//batch_size + 1} returned empty history, symbols: {symbols[:30]}... retry {attempt+1}")
+                        time.sleep(5) # 等待更长时间
+                except Exception as e:
+                    print(f"Coinalyze batch fail: {e}")
+            
+            time.sleep(5) # 增加批次间间隔，Coinalyze 免费版频率限制较低
 
         results.sort(key=lambda x: x['oi_change_pct'], reverse=True)
         return results[:limit]

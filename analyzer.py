@@ -44,6 +44,12 @@ def main():
         db.save_daily_snapshot(date_str, 'nansen_sm', sm_tokens_db)
 
     print("2. 正在获取 Coinalyze 全网 OI 升高名单...")
+    coinalyze_api_key = os.getenv('COINALYZE_API_KEY')
+    if not coinalyze_api_key:
+        print("⚠️ COINALYZE_API_KEY not found in environment, using fallback.")
+        coinalyze_api_key = "84f62b06-6dae-4cf3-aff0-6e3ad52ae825" # Keep as fallback for now
+        
+    coinalyze = CoinalyzeClient(coinalyze_api_key)
     try:
         oi_tokens_raw = coinalyze.get_top_oi_gainers(limit=30)
         oi_tokens_db = [{'token': t['symbol'], 'rank': idx+1, 'value': t['oi_change_pct']} for idx, t in enumerate(oi_tokens_raw)]
