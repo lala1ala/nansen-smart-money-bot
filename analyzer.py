@@ -1,154 +1,115 @@
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-import requests
+import time
+import pandas as pd # 用于美化表格输出
 
+from nansen_client import NansenClient
 from oi_client import CoinalyzeClient
-from database import DailyStatsDB
+from database import CryptoDatabase
 
 load_dotenv()
-api_key = os.getenv('NANSEN_API_KEY')
-headers = {'apikey': api_key, 'Content-Type': 'application/json'}
 
-def get_nansen_sm_inflows():
-    res = requests.post('https://api.nansen.ai/api/v1/smart-money/holdings', headers=headers, json={
-        'chains': ['ethereum'],
-        'pagination': {'limit': 100, 'offset': 0},
-        'order_by': [{'field': 'balance_24h_percent_change', 'direction': 'DESC'}]
-    })
+def generate_table(data, title):
+    """生成简单的 Markdown 表格视图"""
+    if not data:
+        return f"\n### {title}\n(暂无数据)\n"
     
-    if res.status_code == 200:
-        items = res.json().get('data', [])
-        tokens_map = {} # 使用 symbol 作为 key 去重
-        for idx, t in enumerate(items[:50]): # 扩大搜索范围以防主币重复
-            sym = t.get('token_symbol', 'UNKNOWN')
-            if sym.upper() not in ['USDT', 'USDC', 'DAI']:
-                val = float(t.get('value_usd', 0) or 0)
-                chg = float(t.get('balance_24h_percent_change', 0) or 0)
-                net_inflow = val * (chg/100)
-                
-                if sym not in tokens_map or net_inflow > tokens_map[sym]['value']:
-                    tokens_map[sym] = {'token': sym, 'rank': idx+1, 'value': net_inflow}
-        
-        # 转换回列表并按数值排序
-        sorted_tokens = sorted(tokens_map.values(), key=lambda x: x['value'], reverse=True)
-        return sorted_tokens[:30]
-    return []
+    df = pd.DataFrame(data)
+    # 重命名列以提高可读�?
+    rename_map = {
+        'symbol': '币种',
+        'netflow': '净流入(USD)',
+        'net_position_change': '净头寸变化',
+        'oi_change_pct': 'OI变化%',
+        'price': '价格',
+        'oi_value': '当前OI'
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    
+    return f"\n### {title}\n{df.head(10).to_markdown(index=False)}\n"
 
 def main():
     date_str = datetime.now().strftime("%Y-%m-%d")
-    print(f"[{date_str}] 开始抓取与对比数据...\n")
+    print(f"🚀 [{date_str}] 开始自动化加密货币共振分析任务...\n")
     
-    db = DailyStatsDB()
-    coinalyze = CoinalyzeClient("84f62b06-6dae-4cf3-aff0-6e3ad52ae825")
-    sm_tokens_db = []
-    oi_tokens_db = []
+    # 初始化客户端
+    nansen_api_key = os.getenv('NANSEN_API_KEY')
+    coinalyze_api_key = os.getenv('COINALYZE_API_KEY', "84f62b06-6dae-4cf3-aff0-6e3ad52ae825")
     
-    print("1. 正在获取 Nansen Smart Money 24h 增持 (链上聪明钱)...")
-    sm_tokens_db = get_nansen_sm_inflows()
-    if sm_tokens_db:
-        db.save_daily_snapshot(date_str, 'nansen_sm', sm_tokens_db)
-
-    print("2. 正在获取 Coinalyze 全网 OI 升高名单...")
-    coinalyze_api_key = os.getenv('COINALYZE_API_KEY')
-    if not coinalyze_api_key or coinalyze_api_key.strip() == "":
-        print("⚠️ COINALYZE_API_KEY not found or empty in environment, using fallback.")
-        coinalyze_api_key = "84f62b06-6dae-4cf3-aff0-6e3ad52ae825"
-        
+    nansen = NansenClient(nansen_api_key)
     coinalyze = CoinalyzeClient(coinalyze_api_key)
-    try:
-        oi_tokens_raw = coinalyze.get_top_oi_gainers(limit=30)
-        if not oi_tokens_raw:
-            print("⚠️ Coinalyze returned no OI gainers. Check API status/limits.")
-        oi_tokens_db = [{'token': t['symbol'], 'rank': idx+1, 'value': t['oi_change_pct']} for idx, t in enumerate(oi_tokens_raw)]
-        db.save_daily_snapshot(date_str, 'market_oi', oi_tokens_db)
-    except Exception as e:
-        print(f"❌ OI Fetch failed with exception: {e}")
-
-    print("3. 交叉查询 Whale / Hyperliquid (暂不适用原生发现接口)...")
+    db = CryptoDatabase()
     
-    # =============== 分析部分 ===============
-    report_lines = []
-    report_lines.append(f"📊 *Smart Money & OI 每日共振分析报告 ({date_str})*")
-    report_lines.append("="*35)
-
-    # 独立榜单 Top N
-    report_lines.append("\n🌟 *【今日资金单边流入 Top 10】*")
-    if sm_tokens_db:
-        sm_top_str = ", ".join([f"`{t['token']}`" for t in sm_tokens_db[:10]])
-        report_lines.append(f"  • *链上聪明钱*: {sm_top_str}")
-    else:
-        report_lines.append(f"  • *链上聪明钱*: (暂无数据)")
-        
-    if oi_tokens_db:
-        oi_top_str = ", ".join([f"`{t['token']}`(+{t['value']:.1f}%)" for t in oi_tokens_db[:10]])
-        report_lines.append(f"  • *全网OI暴涨*: {oi_top_str}")
-    else:
-        report_lines.append(f"  • *全网OI暴涨*: (暂无数据)")
-
-    # 横向对比
-    all_sources = ['nansen_sm', 'market_oi']
-    overlaps = db.get_overlapping_tokens(date_str, all_sources, min_overlap=2)
+    # 1. 抓取四张图的数据
+    print("📥 正在抓取数据...")
     
-    report_lines.append("\n🔥 *【今日多维共振】*")
-    if not overlaps:
-        report_lines.append("  - 无显著重叠代币")
-    else:
-        for symbol, sources in sorted(overlaps.items(), key=lambda x: len(x[1]), reverse=True):
-            display_sources = [s.replace('nansen_sm', '链上聪明钱').replace('market_oi', '全网OI暴涨') for s in sources]
-            report_lines.append(f"  • `{symbol:<8}` ({len(sources)}/2) -> {', '.join(display_sources)}")
-
-    # 纵向对比 (3天)
-    report_lines.append("\n📈 *【近3天持续活跃榜】*")
-    long_trends_3d = db.get_longitudinal_tokens(date_str, days=3, min_appearances=1)
-    if not long_trends_3d:
-        report_lines.append("  - 无近期持续活跃代币 (3天)")
-    else:
-        for symbol, data in long_trends_3d.items():
-            details = []
-            for src, count in data.items():
-                if count >= 1:
-                    clean_src = src.replace('nansen_sm', '链上').replace('market_oi', 'OI')
-                    details.append(f"{clean_src}({count}天)")
-            if details:
-                report_lines.append(f"  • `{symbol:<8}` (3天内) -> {', '.join(details)}")
-
-    # 纵向对比 (7天)
-    report_lines.append("\n👑 *【近7天高频常客榜】* (至少上榜2天)")
-    long_trends_7d = db.get_longitudinal_tokens(date_str, days=7, min_appearances=2)
-    if not long_trends_7d:
-        report_lines.append("  - 无常客代币 (7天)")
-    else:
-        for symbol, data in long_trends_7d.items():
-            details = []
-            for src, count in data.items():
-                if count >= 2:
-                    clean_src = src.replace('nansen_sm', '链上').replace('market_oi', 'OI')
-                    details.append(f"{clean_src}({count}次)")
-            if details:
-                report_lines.append(f"  • `{symbol:<8}` (7天内) -> {', '.join(details)}")
-
-    final_report = "\n".join(report_lines)
-    print(final_report)
+    # �?: Hyperliquid Perp
+    print(" - 获取 Hyperliquid Perp 数据...")
+    hl_data = nansen.get_hyperliquid_perp_screener()
+    db.save_snapshot('hyperliquid', hl_data)
     
-    # === 发送 Telegram 消息 === 
-    tg_token = os.getenv('TELEGRAM_BOT_TOKEN')
-    tg_chat_id = os.getenv('TELEGRAM_CHAT_ID')
-    if tg_token and tg_chat_id:
-        print("\n正在推送到 Telegram...")
-        try:
-            tg_url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
-            res = requests.post(tg_url, json={
-                "chat_id": tg_chat_id,
-                "text": final_report,
-                "parse_mode": "Markdown"
-            })
-            if res.status_code == 200:
-                print("✅ Telegram 推送成功！")
-            else:
-                print(f"❌ Telegram 推送失败: {res.text}")
-        except Exception as e:
-            print(f"❌ Telegram 请求报错: {e}")
+    # �?: Smart Money Spot
+    print(" - 获取 Smart Money Spot 数据...")
+    sm_data = nansen.get_token_screener('24h', participant_type='smart_money')
+    db.save_snapshot('smart_money', sm_data)
+    
+    # �?: 全网 OI (Coinalyze)
+    print(" - 获取 Market OI 数据...")
+    oi_raw = coinalyze.get_top_oi_gainers(limit=30)
+    oi_data = [{'symbol': t['symbol'], 'oi_change_pct': t['oi_change_pct']} for t in oi_raw]
+    db.save_snapshot('oi', oi_data)
+    
+    # �?: Whale Spot
+    print(" - 获取 Whale Spot 数据...")
+    whale_data = nansen.get_token_screener('24h', participant_type='whale')
+    db.save_snapshot('whale', whale_data)
+    
+    # 2. 生成报告文本
+    report = f"# 📊 加密货币共振分析报告 ({date_str})\n"
+    report += "---"
+    
+    # 输出四张表的表格
+    report += generate_table(sm_data, "1. Smart Money Spot 入场 (链上)")
+    report += generate_table(whale_data, "2. Whale Spot 入场 (巨鲸)")
+    report += generate_table(hl_data, "3. Hyperliquid Perp 持仓变化")
+    report += generate_table(oi_data, "4. 全网 OI 暴涨名单 (Coinalyze)")
+    
+    # 3. 自动化比�?- 横向共振 (当日四张图内重复出现的币)
+    report += "\n## 🔥 【今日横向共振�?(多维指标同时看多)\n"
+    all_symbols = {}
+    for source, data in [('SmartMoney', sm_data), ('Whale', whale_data), ('Hyperliquid', hl_data), ('MarketOI', oi_data)]:
+        for item in data:
+            sym = item['symbol']
+            if sym not in all_symbols:
+                all_symbols[sym] = []
+            all_symbols[sym].append(source)
+    
+    resonance_found = False
+    for sym, sources in all_symbols.items():
+        if len(sources) >= 2:
+            report += f"- **`{sym}`**: 出现�?{', '.join(sources)} ({len(sources)}个维�?\n"
+            resonance_found = True
+    if not resonance_found: report += "暂无显著共振。\n"
+    
+    # 4. 自动化比�?- 纵向共振 (连续3天出现在同一榜单)
+    report += "\n## 📈 �?日纵向共振�?(持续走强趋势)\n"
+    longitudinal_found = False
+    for source_name, source_key in [('Smart Money', 'smart_money'), ('Whale', 'whale'), ('Hyperliquid', 'hyperliquid'), ('OI', 'oi')]:
+        consecutive = db.get_consecutive_tokens(source_key, days=3)
+        if consecutive:
+            report += f"- **{source_name}**: 连续3天活�?- {', '.join([f'`{s}`' for s in consecutive])}\n"
+            longitudinal_found = True
+    if not longitudinal_found: report += "暂无持续走强代币。\n"
+    
+    print("\n�?分析完成！生成报�?..")
+    print(report)
+    
+    # 5. 推送报�?(可�?
+    # ... 原有�?TG 推送逻辑可以放在这里 ...
+    # 将报告保存到本地文件
+    with open(f"report_{date_str}.md", "w", encoding="utf-8") as f:
+        f.write(report)
 
 if __name__ == "__main__":
     main()
